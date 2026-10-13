@@ -48,9 +48,6 @@ jobs:
           UCAS_TIMEZONE: Asia/Shanghai
         run: node scripts/ucas-automation.mjs fetch-schedule
 
-      - name: Print non-sensitive schedule report
-        run: cat .github/mail/schedule.txt
-
       - name: Send today's schedule by email
         env:
           MAIL_HOST: ${{ secrets.MAIL_HOST }}
