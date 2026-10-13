@@ -1,0 +1,62 @@
+name: UCAS 测试获取当前课表并发邮件
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-schedule-mail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate required secrets
+        env:
+          UCAS_USERNAME: ${{ secrets.UCAS_USERNAME }}
+          UCAS_PASSWORD: ${{ secrets.UCAS_PASSWORD }}
+          MAIL_HOST: ${{ secrets.MAIL_HOST }}
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        shell: bash
+        run: |
+          missing=()
+          [[ -n "$UCAS_USERNAME" ]] || missing+=(UCAS_USERNAME)
+          [[ -n "$UCAS_PASSWORD" ]] || missing+=(UCAS_PASSWORD)
+          [[ -n "$MAIL_HOST" ]] || missing+=(MAIL_HOST)
+          [[ -n "$MAIL_USERNAME" ]] || missing+=(MAIL_USERNAME)
+          [[ -n "$MAIL_PASSWORD" ]] || missing+=(MAIL_PASSWORD)
+          [[ -n "$MAIL_TO" ]] || missing+=(MAIL_TO)
+          if (( ${#missing[@]} > 0 )); then
+            echo "缺少 Secrets：${missing[*]}"
+            exit 1
+          fi
+
+      - name: Fetch today's schedule
+        env:
+          UCAS_USERNAME: ${{ secrets.UCAS_USERNAME }}
+          UCAS_PASSWORD: ${{ secrets.UCAS_PASSWORD }}
+          UCAS_TIMEZONE: Asia/Shanghai
+        run: node scripts/ucas-automation.mjs fetch-schedule
+
+      - name: Print non-sensitive schedule report
+        run: cat .github/mail/schedule.txt
+
+      - name: Send today's schedule by email
+        env:
+          MAIL_HOST: ${{ secrets.MAIL_HOST }}
+          MAIL_PORT: ${{ secrets.MAIL_PORT || 465 }}
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM || secrets.MAIL_USERNAME }}
+        run: python3 scripts/send_mail.py --subject "UCAS 测试：今日课程表" --body .github/mail/schedule.txt

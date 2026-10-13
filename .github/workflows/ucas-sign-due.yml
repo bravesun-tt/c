@@ -1,0 +1,90 @@
+name: UCAS 到点自动签到
+
+on:
+  schedule:
+    # 每节课开始前 25 分钟查询当天课表并签到；cron 使用 UTC（北京时间减 8 小时）。
+    - cron: "5 0 * * *"  # 第 1 节 08:30 → 北京时间 08:05
+    - cron: "55 0 * * *"  # 第 2 节 09:20 → 北京时间 08:55
+    - cron: "0 2 * * *"  # 第 3 节 10:25 → 北京时间 10:00
+    - cron: "50 2 * * *"  # 第 4 节 11:15 → 北京时间 10:50
+    - cron: "5 5 * * *"  # 第 5 节 13:30 → 北京时间 13:05
+    - cron: "55 5 * * *"  # 第 6 节 14:20 → 北京时间 13:55
+    - cron: "0 7 * * *"  # 第 7 节 15:25 → 北京时间 15:00
+    - cron: "50 7 * * *"  # 第 8 节 16:15 → 北京时间 15:50
+    - cron: "40 8 * * *"  # 第 9 节 17:05 → 北京时间 16:40
+    - cron: "5 10 * * *"  # 第 10 节 18:30 → 北京时间 18:05
+    - cron: "55 10 * * *"  # 第 11 节 19:20 → 北京时间 18:55
+    - cron: "50 11 * * *"  # 第 12 节 20:15 → 北京时间 19:50
+    - cron: "40 12 * * *"  # 第 13 节 21:05 → 北京时间 20:40
+  workflow_dispatch:
+
+concurrency:
+  group: ucas-course-automation
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sign-due:
+    runs-on: ubuntu-latest
+    # 重试窗口最长 35 分钟，额外预留查询课表、提交状态和发邮件的时间。
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Sync branch
+        run: |
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+
+      - name: Fetch today's schedule
+        env:
+          UCAS_USERNAME: ${{ secrets.UCAS_USERNAME }}
+          UCAS_PASSWORD: ${{ secrets.UCAS_PASSWORD }}
+          UCAS_TIMEZONE: Asia/Shanghai
+        run: node scripts/ucas-automation.mjs fetch-schedule
+
+      - name: Sign courses that are due
+        env:
+          UCAS_USERNAME: ${{ secrets.UCAS_USERNAME }}
+          UCAS_PASSWORD: ${{ secrets.UCAS_PASSWORD }}
+          UCAS_TIMEZONE: Asia/Shanghai
+        run: node scripts/ucas-automation.mjs sign-due
+
+      - name: Commit sign-in state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [[ -f .github/state/current.json ]]; then git add .github/state/current.json; fi
+          git diff --cached --quiet || git commit -m "chore: record UCAS sign-in result"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Check whether an email is needed
+        id: result
+        shell: bash
+        run: |
+          if [[ -s .github/mail/sign-results.txt ]]; then
+            echo "send_mail=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "send_mail=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Email sign-in result
+        if: steps.result.outputs.send_mail == 'true'
+        env:
+          MAIL_HOST: ${{ secrets.MAIL_HOST }}
+          MAIL_PORT: ${{ secrets.MAIL_PORT || 465 }}
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM || secrets.MAIL_USERNAME }}
+        run: python3 scripts/send_mail.py --subject "UCAS 自动签到结果" --body .github/mail/sign-results.txt
