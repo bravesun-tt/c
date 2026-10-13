@@ -276,13 +276,14 @@ Browser
 
 ## GitHub Actions 自动课表与签到
 
-项目提供三个 GitHub Actions 工作流：
+项目提供四个 GitHub Actions 工作流：
 
 | 工作流 | 触发方式 | 作用 |
 | --- | --- | --- |
 | `UCAS 测试获取当前课表并发邮件` | 手动运行 | 立即获取当天课表并发送测试邮件，不修改仓库状态 |
 | `UCAS 获取每日课表` | 仅手动运行 | 获取当天课表，保存课表状态，并发送课程表邮件 |
 | `UCAS 到点自动签到` | 每节课开始前 25 分钟，也可以手动运行 | 每次先获取当天最新课表，再为签到窗口内的课程尝试签到 |
+| `UCAS 手动签到` | 仅手动运行 | 查询最新课表，为窗口内课程重试签到，保存精简状态并发送结果邮件 |
 
 自动签到按照下表每天触发 13 次，每次实时查询当天课表；没有符合签到窗口的课程时直接跳过。取消清晨预取课表和每 5 分钟轮询。课程是否需要签到以查询结果为准；如果学校调整节次开始时间，需要同步修改 workflow 中的 cron。
 
@@ -318,6 +319,7 @@ GitHub Actions 的定时任务可能延迟，不能保证准点执行；脚本�
 .github/workflows/ucas-test-schedule.yml
 .github/workflows/ucas-fetch-schedule.yml
 .github/workflows/ucas-sign-due.yml
+.github/workflows/ucas-sign-manual.yml
 scripts/ucas-automation.mjs
 scripts/send_mail.py
 ```
@@ -327,7 +329,7 @@ scripts/send_mail.py
 - `Read and write permissions`
 - 如果页面显示 `Allow GitHub Actions to create and approve pull requests`，不需要打开这一项
 
-每日课表和自动签到工作流需要将状态提交回仓库，因此必须有 `contents: write` 权限。测试课表工作流只需要读取代码，使用的是 `contents: read`。
+每日课表、自动签到和手动签到工作流需要将状态提交回仓库，因此必须有 `contents: write` 权限。测试课表工作流只需要读取代码，使用的是 `contents: read`。
 
 ### 第二步：添加 Repository Secrets
 
@@ -380,6 +382,14 @@ scripts/send_mail.py
 - `UCAS 获取每日课表` 改为仅手动运行，需要整天课表邮件时可自行触发。
 
 如需立即检查，可在 **Actions → UCAS 到点自动签到 → Run workflow** 手动运行；它同样会先刷新课表，再尝试签到窗口内的课程。
+
+### 手动触发签到
+
+在 **Actions → UCAS 手动签到 → Run workflow** 中选择分支并运行。此工作流只配置 `workflow_dispatch`，不会定时运行，也不会因推送代码或提交 PR 自动运行。
+
+手动流程与到点自动签到相同：先查当天课表，在开课前 25 分钟至开课后 10 分钟的窗口内签到；失败后等待 10 秒加随机 0～10 秒重试，直到成功或窗口结束。流程结束后提交精简状态，有签到结果时发送标题为 `UCAS 手动签到结果` 的邮件。无需新增 Secrets。
+
+手动与定时工作流共用并发组和状态文件，避免同时写入状态；已成功的课程会跳过。本次新增工作流不改变原有 `UCAS 到点自动签到` 的定时配置。
 
 ### 本地配置和测试
 

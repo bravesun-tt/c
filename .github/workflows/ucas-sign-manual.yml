@@ -1,0 +1,75 @@
+name: UCAS 手动签到
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ucas-course-automation
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sign-due:
+    runs-on: ubuntu-latest
+    # 重试窗口最长 35 分钟，额外预留查询课表、提交状态和发邮件的时间。
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Sync branch
+        run: |
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+
+      - name: Fetch today's schedule
+        env:
+          UCAS_USERNAME: ${{ secrets.UCAS_USERNAME }}
+          UCAS_PASSWORD: ${{ secrets.UCAS_PASSWORD }}
+          UCAS_TIMEZONE: Asia/Shanghai
+        run: node scripts/ucas-automation.mjs fetch-schedule
+
+      - name: Sign courses that are due
+        env:
+          UCAS_USERNAME: ${{ secrets.UCAS_USERNAME }}
+          UCAS_PASSWORD: ${{ secrets.UCAS_PASSWORD }}
+          UCAS_TIMEZONE: Asia/Shanghai
+        run: node scripts/ucas-automation.mjs sign-due
+
+      - name: Commit sign-in state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [[ -f .github/state/current.json ]]; then git add .github/state/current.json; fi
+          git diff --cached --quiet || git commit -m "chore: record UCAS sign-in result"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Check whether an email is needed
+        id: result
+        shell: bash
+        run: |
+          if [[ -s .github/mail/sign-results.txt ]]; then
+            echo "send_mail=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "send_mail=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Email sign-in result
+        if: steps.result.outputs.send_mail == 'true'
+        env:
+          MAIL_HOST: ${{ secrets.MAIL_HOST }}
+          MAIL_PORT: ${{ secrets.MAIL_PORT || 465 }}
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM || secrets.MAIL_USERNAME }}
+        run: python3 scripts/send_mail.py --subject "UCAS 手动签到结果" --body .github/mail/sign-results.txt
