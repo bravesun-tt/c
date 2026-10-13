@@ -8,6 +8,7 @@ import { randomInt } from "node:crypto";
 
 const ROOT = resolve(process.cwd());
 const STATE_FILE = resolve(ROOT, ".github/state/current.json");
+const RUNTIME_STATE_FILE = resolve(ROOT, ".github/runtime/current.json");
 const MAIL_DIR = resolve(ROOT, ".github/mail");
 const SCHEDULE_MAIL_FILE = resolve(MAIL_DIR, "schedule.txt");
 const SIGN_MAIL_FILE = resolve(MAIL_DIR, "sign-results.txt");
@@ -197,9 +198,35 @@ async function readState() {
 	return JSON.parse(await readFile(STATE_FILE, "utf8"));
 }
 
+async function readRuntimeState() {
+	if (existsSync(RUNTIME_STATE_FILE)) {
+		return JSON.parse(await readFile(RUNTIME_STATE_FILE, "utf8"));
+	}
+	// 兼容旧版完整状态文件；下一次写入时会自动精简提交内容。
+	const legacy = await readState();
+	return Array.isArray(legacy?.courses) ? legacy : null;
+}
+
+function toStoredState(state) {
+	if (!/^\d{8}$/.test(state.date)) throw new Error("状态日期格式错误");
+	const attempts = {};
+	for (const [id, attempt] of Object.entries(state.attempts ?? {})) {
+		if (!/^\d{7}$/.test(id) || !["success", "failed", "expired", "missed"].includes(attempt?.status)) continue;
+		// 使用字段白名单，避免上游消息或旧版字段夹带课程、教师等信息。
+		attempts[id] = {
+			status: attempt.status,
+			attemptCount: Number.isSafeInteger(attempt.attemptCount) && attempt.attemptCount >= 0 ? attempt.attemptCount : 0,
+		};
+	}
+	return { version: 2, date: state.date, attempts };
+}
+
 async function writeState(state) {
+	const storedState = toStoredState(state);
+	await mkdir(dirname(RUNTIME_STATE_FILE), { recursive: true });
+	await writeFile(RUNTIME_STATE_FILE, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 	await mkdir(dirname(STATE_FILE), { recursive: true });
-	await writeFile(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+	await writeFile(STATE_FILE, `${JSON.stringify(storedState, null, 2)}\n`, "utf8");
 }
 
 function courseLabel(course) {
@@ -251,7 +278,7 @@ async function fetchCommand() {
 	const previous = await readState();
 	const attempts = previous?.date === date && previous?.attempts && typeof previous.attempts === "object" ? previous.attempts : {};
 	const state = {
-		version: 1,
+		version: 2,
 		date,
 		timezone: TIMEZONE,
 		fetchedAt: new Date().toISOString(),
@@ -266,9 +293,9 @@ async function fetchCommand() {
 
 async function signDueCommand() {
 	if (existsSync(SIGN_MAIL_FILE)) unlinkSync(SIGN_MAIL_FILE);
-	const state = await readState();
+	const state = await readRuntimeState();
 	if (!state) {
-		console.log("尚未找到当天课表，跳过签到检查");
+		console.log("尚未找到本次运行的课表，请先运行 fetch-schedule，跳过签到检查");
 		return;
 	}
 	const today = currentDateInTimezone();

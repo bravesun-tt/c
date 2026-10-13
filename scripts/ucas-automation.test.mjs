@@ -93,11 +93,13 @@ function run(cwd, command = "sign-due", expectSuccess = true) {
 	assert.ifError(result.error);
 	if (expectSuccess) assert.equal(result.status, 0, result.stderr);
 	else assert.notEqual(result.status, 0);
-	const state = JSON.parse(readFileSync(join(cwd, ".github/state/current.json"), "utf8"));
+	const storedState = JSON.parse(readFileSync(join(cwd, ".github/state/current.json"), "utf8"));
+	const runtimePath = join(cwd, ".github/runtime/current.json");
+	const state = existsSync(runtimePath) ? JSON.parse(readFileSync(runtimePath, "utf8")) : storedState;
 	const trace = JSON.parse(readFileSync(join(cwd, "trace.json"), "utf8"));
 	const mailPath = join(cwd, ".github/mail/sign-results.txt");
 	const scheduleMailPath = join(cwd, ".github/mail/schedule.txt");
-	return { state, ...trace, stderr: result.stderr, mail: existsSync(mailPath) ? readFileSync(mailPath, "utf8") : null, scheduleMail: existsSync(scheduleMailPath) ? readFileSync(scheduleMailPath, "utf8") : null };
+	return { state, storedState, ...trace, stderr: result.stderr, mail: existsSync(mailPath) ? readFileSync(mailPath, "utf8") : null, scheduleMail: existsSync(scheduleMailPath) ? readFileSync(scheduleMailPath, "utf8") : null };
 }
 
 const signCalls = result => result.calls.filter(call => call.endpoint === "stu_scan_sign.action");
@@ -300,4 +302,73 @@ test("observed UCAS no-course payload STATUS=2 without result generates the sche
 	const signing = run(cwd);
 	assert.equal(signing.calls.length, 0);
 	assert.equal(signing.mail, null);
+});
+
+
+function assertMinimalStoredState(state) {
+	assert.deepEqual(Object.keys(state).sort(), ["attempts", "date", "version"]);
+	assert.equal(state.version, 2);
+	assert.match(state.date, /^\d{8}$/);
+	for (const [id, attempt] of Object.entries(state.attempts)) {
+		assert.match(id, /^\d{7}$/);
+		assert.deepEqual(Object.keys(attempt).sort(), ["attemptCount", "status"]);
+	}
+}
+
+test("committed state omits course details while runtime state and email retain them", () => {
+	const privateCourse = { ...course(), teacherName: "Private Teacher", uuid: "private-course-uuid", classEndTime: "2026-10-13 09:15:00" };
+	const cwd = setup({ courses: [privateCourse] }, {
+		"1000002": { status: "failed", attemptCount: 2, message: "Course 1000001 Private Teacher", stuSignId: "private-sign-id", attemptedAt: "2026-10-13T00:05:00Z" },
+		"Private Course Name": { status: "failed", attemptCount: 1 },
+	});
+	const result = run(cwd, "fetch-schedule");
+	assertMinimalStoredState(result.storedState);
+	assert.deepEqual(result.storedState.attempts, { "1000002": { status: "failed", attemptCount: 2 } });
+	assert.equal(result.state.courses[0].teacherName, "Private Teacher");
+	assert.match(result.scheduleMail, /Private Teacher/);
+	assert.match(result.scheduleMail, /Course 1000001/);
+	assert.match(result.scheduleMail, /08:30:00/);
+	assert.doesNotMatch(JSON.stringify(result.storedState), /Course|Teacher|uuid|message|stuSignId|attemptedAt|08:30/);
+	const signed = run(cwd);
+	assertMinimalStoredState(signed.storedState);
+	assert.equal(signed.storedState.attempts["1000001"].status, "success");
+	assert.match(signed.mail, /Private Teacher/);
+});
+
+test("a fresh runner preserves deduplication using only committed minimal state", () => {
+	const first = setup();
+	const signed = run(first);
+	assertMinimalStoredState(signed.storedState);
+	const second = setup();
+	writeFileSync(join(second, ".github/state/current.json"), JSON.stringify(signed.storedState));
+	const queried = run(second, "fetch-schedule");
+	assertMinimalStoredState(queried.storedState);
+	const result = run(second);
+	assert.equal(signCalls(result).length, 0);
+	assert.equal(result.mail, null);
+	assert.equal(result.storedState.attempts["1000001"].status, "success");
+});
+
+test("minimal stored state alone cannot supply a course for signing", () => {
+	const cwd = setup();
+	const saved = { version: 2, date: "20261013", attempts: { "1000001": { status: "failed", attemptCount: 1 } } };
+	writeFileSync(join(cwd, ".github/state/current.json"), JSON.stringify(saved));
+	const result = run(cwd);
+	assert.deepEqual(result.storedState, saved);
+	assert.equal(result.calls.length, 0);
+	assert.equal(result.mail, null);
+});
+
+test("expired attempt diagnostics stay out of committed state but remain in the email", () => {
+	const result = run(setup({ now: "2026-10-13T08:39:55+08:00", outcomes: { "1000001": ["failure"] } }));
+	assertMinimalStoredState(result.storedState);
+	assert.equal(result.storedState.attempts["1000001"].status, "expired");
+	assert.doesNotMatch(JSON.stringify(result.storedState), /not ready|Course/);
+	assert.match(result.mail, /not ready/);
+});
+
+test("runtime course data and mail files are ignored by Git", () => {
+	const result = spawnSync("git", ["check-ignore", "--no-index", ".github/runtime/current.json", ".github/mail/schedule.txt", ".github/mail/sign-results.txt"], { cwd: root, encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(result.stdout.trim().split("\n"), [".github/runtime/current.json", ".github/mail/schedule.txt", ".github/mail/sign-results.txt"]);
 });
