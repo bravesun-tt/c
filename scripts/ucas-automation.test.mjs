@@ -234,6 +234,9 @@ test("empty schedule responses generate a no-courses email and skip signing", ()
 		{ STATUS: "0", result: null },
 		{ STATUS: "0", message: "查询成功", result: [] },
 		{ STATUS: "1", result: [] },
+		{ STATUS: "2", result: [] },
+		{ STATUS: "2", result: null },
+		{ STATUS: 2 },
 		{ STATUS: "1", result: null },
 		{ STATUS: "1", result: "" },
 		{ STATUS: "1" },
@@ -268,7 +271,10 @@ test("real upstream errors and malformed responses do not become no-courses emai
 		{ STATUS: "1", ERRCODE: "100", result: [] },
 		{ STATUS: "1", message: "服务器异常", result: null },
 		{ STATUS: "1", message: "课表查询失败，或当天没有课程", result: [] },
-		{ STATUS: "2", result: [] },
+		{ STATUS: "3", result: [] },
+		{ STATUS: "2", ERRMSG: "登录已过期" },
+		{ STATUS: "2", ERRCODE: "100" },
+		{ STATUS: "2", result: [course()] },
 		{ STATUS: "0", result: { unexpected: true } },
 		{ STATUS: "0", ERRCODE: "100", result: [] },
 		{ STATUS: "1", result: [course()] },
@@ -281,4 +287,17 @@ test("real upstream errors and malformed responses do not become no-courses emai
 		assert.equal(result.state.courses.length, 1);
 		assert.equal(result.scheduleMail, null);
 	}
+});
+
+
+test("observed UCAS no-course payload STATUS=2 without result generates the schedule email", () => {
+	// Exact non-sensitive response observed after a successful real login on 2026-10-13.
+	const cwd = setup({ scheduleResponse: { STATUS: "2" } });
+	const result = run(cwd, "fetch-schedule");
+	assert.deepEqual(result.state.courses, []);
+	assert.match(result.scheduleMail, /今天没有查询到课程/);
+	assert.equal(result.stderr, "");
+	const signing = run(cwd);
+	assert.equal(signing.calls.length, 0);
+	assert.equal(signing.mail, null);
 });

@@ -157,8 +157,8 @@ async function fetchSchedule(date) {
 		if (emptyResult) return [];
 		if (Array.isArray(result)) return result.map(normalizeCourse);
 	}
-	// 明确的无课提示，以及 STATUS=1 且无错误信息的空结果，都按空课表处理。
-	if (emptyResult && (explicitlyEmpty || (status === "1" && !hasErrorCode && messages.length === 0))) {
+	// 实际无课响应可能只有 { STATUS: "2" }；兼容无错误信息的 STATUS=1/2 空结果。
+	if (emptyResult && (explicitlyEmpty || (["1", "2"].includes(status) && !hasErrorCode && messages.length === 0))) {
 		console.log(`课表接口返回空课表（STATUS=${status || "缺失"}），继续生成无课程邮件`);
 		return [];
 	}
