@@ -52,7 +52,7 @@ globalThis.fetch = async (url) => {
     data = { STATUS: '0', result: { id: 'mock-user', sessionId: 'session-' + count } };
   } else if (endpoint === 'get_stu_course_sched.action') {
     if (fixture.queryFailure) throw new Error('temporary schedule failure');
-    data = { STATUS: '0', result: fixture.courses };
+    data = Object.hasOwn(fixture, 'scheduleResponse') ? fixture.scheduleResponse : { STATUS: '0', result: fixture.courses };
   } else if (endpoint === 'get_timestamp.do') {
     if (count <= (fixture.timestampFailures || 0)) throw new Error('temporary timestamp failure');
     data = { STATUS: '0', timestamp: now };
@@ -96,7 +96,8 @@ function run(cwd, command = "sign-due", expectSuccess = true) {
 	const state = JSON.parse(readFileSync(join(cwd, ".github/state/current.json"), "utf8"));
 	const trace = JSON.parse(readFileSync(join(cwd, "trace.json"), "utf8"));
 	const mailPath = join(cwd, ".github/mail/sign-results.txt");
-	return { state, ...trace, mail: existsSync(mailPath) ? readFileSync(mailPath, "utf8") : null };
+	const scheduleMailPath = join(cwd, ".github/mail/schedule.txt");
+	return { state, ...trace, stderr: result.stderr, mail: existsSync(mailPath) ? readFileSync(mailPath, "utf8") : null, scheduleMail: existsSync(scheduleMailPath) ? readFileSync(scheduleMailPath, "utf8") : null };
 }
 
 const signCalls = result => result.calls.filter(call => call.endpoint === "stu_scan_sign.action");
@@ -223,4 +224,61 @@ test("failed schedule refresh exits nonzero and leaves saved attempts intact", (
 	const result = run(setup({ queryFailure: true }, { "1000001": { status: "success", attemptCount: 2 } }), "fetch-schedule", false);
 	assert.equal(result.state.attempts["1000001"].status, "success");
 	assert.equal(signCalls(result).length, 0);
+});
+
+
+test("empty schedule responses generate a no-courses email and skip signing", () => {
+	const responses = [
+		{ STATUS: "0", result: [] },
+		{ STATUS: 0, result: [] },
+		{ STATUS: "0", result: null },
+		{ STATUS: "0", message: "查询成功", result: [] },
+		{ STATUS: "1", result: [] },
+		{ STATUS: "1", result: null },
+		{ STATUS: "1", result: "" },
+		{ STATUS: "1" },
+		{ STATUS: "1", ERRMSG: "当天没有课程" },
+		{ STATUS: "1", msg: "暂无课表。", result: [] },
+		{ STATUS: "1", message: "未查询到相关课程", result: null },
+	];
+	for (const scheduleResponse of responses) {
+		const cwd = setup({ scheduleResponse });
+		const result = run(cwd, "fetch-schedule");
+		assert.deepEqual(result.state.courses, [], JSON.stringify(scheduleResponse));
+		assert.match(result.scheduleMail, /今天没有查询到课程/);
+		assert.match(result.scheduleMail, /2026-10-13/);
+		const signing = run(cwd);
+		assert.equal(signing.calls.length, 0);
+		assert.equal(signing.mail, null);
+	}
+});
+
+test("normal schedule responses still include courses in the email", () => {
+	for (const STATUS of ["0", 0]) {
+		const result = run(setup({ scheduleResponse: { STATUS, result: [course()] } }), "fetch-schedule");
+		assert.equal(result.state.courses.length, 1);
+		assert.match(result.scheduleMail, /Course 1000001/);
+		assert.doesNotMatch(result.scheduleMail, /今天没有查询到课程/);
+	}
+});
+
+test("real upstream errors and malformed responses do not become no-courses emails", () => {
+	const responses = [
+		{ STATUS: "1", ERRMSG: "登录已过期", result: [] },
+		{ STATUS: "1", ERRCODE: "100", result: [] },
+		{ STATUS: "1", message: "服务器异常", result: null },
+		{ STATUS: "1", message: "课表查询失败，或当天没有课程", result: [] },
+		{ STATUS: "2", result: [] },
+		{ STATUS: "0", result: { unexpected: true } },
+		{ STATUS: "0", ERRCODE: "100", result: [] },
+		{ STATUS: "1", result: [course()] },
+		{},
+		null,
+	];
+	for (const scheduleResponse of responses) {
+		const result = run(setup({ scheduleResponse }), "fetch-schedule", false);
+		assert.match(result.stderr, /课表查询失败或返回格式异常.*STATUS=/);
+		assert.equal(result.state.courses.length, 1);
+		assert.equal(result.scheduleMail, null);
+	}
 });

@@ -361,7 +361,7 @@ scripts/send_mail.py
 5. 打开新生成的运行记录，查看 `Validate required secrets`、`Fetch today's schedule` 和 `Send today's schedule by email` 三个步骤。
 6. 确认收件邮箱收到了标题为 `UCAS 测试：今日课程表` 的邮件。
 
-这个测试工作流使用北京时间获取当天课表，不会提交 `.github/state/current.json`，适合先检查 UCAS 账号、网络访问和 SMTP 配置是否正确。
+这个测试工作流使用北京时间获取当天课表，不会提交 `.github/state/current.json`，适合先检查 UCAS 账号、网络访问和 SMTP 配置是否正确。当天无课程也会正常完成，并发送包含“今天没有查询到课程”的邮件。脚本兼容空列表、明确的无课提示，以及 `STATUS=1` 且没有错误信息的空结果；登录、网络、明确的上游错误或无法识别的响应仍会报错，避免误报为无课。
 
 ### 第四步：启用课前自动签到
 

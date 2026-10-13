@@ -140,8 +140,30 @@ async function fetchSchedule(date) {
 		method: "GET",
 		headers: { sessionId, "User-Agent": API_UA },
 	});
-	if (data?.STATUS !== "0") throw new Error("课表查询失败，或当天没有课程");
-	return (Array.isArray(data.result) ? data.result : []).map(normalizeCourse);
+	const status = String(data?.STATUS ?? "");
+	const result = data?.result;
+	const emptyResult = result == null || result === "" || (Array.isArray(result) && result.length === 0);
+	const messages = [data?.ERRMSG, data?.msg, data?.message, result?.msg]
+		.filter((value) => typeof value === "string" && value.trim())
+		.map((value) => value.trim());
+	const errorCode = String(data?.ERRCODE ?? "");
+	const noCoursesMessage = /^(?:(?:今天|今日|当天|当日|该日|该日期|指定日期|当前日期)的?)?(?:(?:暂无|没有|无)(?:相关)?(?:课程|课表|排课|数据)(?:信息|记录|安排)?|未(?:查询到|查到|找到|获取到)(?:相关)?(?:课程|课表|排课|数据)(?:信息|记录|安排)?)$/;
+	const explicitlyEmpty = messages.length > 0 && messages.every((message) =>
+		noCoursesMessage.test(message.replace(/[。.!！\s]+$/u, "")),
+	);
+	const hasErrorCode = errorCode !== "" && errorCode !== "0";
+
+	if (status === "0" && !hasErrorCode) {
+		if (emptyResult) return [];
+		if (Array.isArray(result)) return result.map(normalizeCourse);
+	}
+	// 明确的无课提示，以及 STATUS=1 且无错误信息的空结果，都按空课表处理。
+	if (emptyResult && (explicitlyEmpty || (status === "1" && !hasErrorCode && messages.length === 0))) {
+		console.log(`课表接口返回空课表（STATUS=${status || "缺失"}），继续生成无课程邮件`);
+		return [];
+	}
+	const detail = [`STATUS=${status || "缺失"}`, errorCode && `ERRCODE=${errorCode}`, ...messages].filter(Boolean).join("，");
+	throw new Error(`课表查询失败或返回格式异常（${detail}）`);
 }
 
 async function serverTimestamp() {
