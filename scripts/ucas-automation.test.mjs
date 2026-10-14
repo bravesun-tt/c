@@ -24,17 +24,21 @@ let now = OriginalDate.parse(fixture.now);
 const calls = [];
 const delays = [];
 const counters = {};
-let jitterIndex = 0;
+let retryRandomIndex = 0;
 const save = () => writeFileSync('trace.json', JSON.stringify({ calls, delays, now }));
 globalThis.Date = class extends OriginalDate {
   constructor(...args) { super(...(args.length ? args : [now])); }
   static now() { return now; }
 };
 timers.setTimeout = async (ms) => { delays.push(ms); now += ms; save(); };
-crypto.randomInt = (min, max) => {
-  if (min !== 0 || max !== 11) throw new Error('Expected jitter range 0..10 seconds inclusive');
-  const values = fixture.jitterSeconds || [0];
-  return values[jitterIndex++ % values.length];
+crypto.randomBytes = (size) => {
+  if (size !== 6) throw new Error('Expected 6 random bytes for retry delay');
+  const values = fixture.retryRandomUnits || [0];
+  const unit = Math.min(Math.max(values[retryRandomIndex++ % values.length], 0), 0.9999999999999999);
+  const value = Math.floor(unit * 0x1000000000000);
+  const buffer = Buffer.alloc(6);
+  buffer.writeUIntBE(value, 0, 6);
+  return buffer;
 };
 syncBuiltinESMExports();
 globalThis.fetch = async (url) => {
@@ -129,7 +133,7 @@ test("login, timestamp, network, timeout and rejected sign-ins retry until succe
 	const result = run(setup({ loginFailures: 1, timestampFailures: 1, outcomes: { "1000001": ["network", "timeout", "failure", "success"] } }));
 	assert.equal(result.state.attempts["1000001"].status, "success");
 	assert.equal(result.state.attempts["1000001"].attemptCount, 6);
-	assert.deepEqual(result.delays, Array(5).fill(10000));
+	assert.deepEqual(result.delays, Array(5).fill(1000));
 	assert.equal(result.calls.filter(call => call.endpoint === "login.action").length, 6);
 	assert.equal(result.calls.filter(call => call.endpoint === "get_timestamp.do").length, 5);
 	assert.equal(signCalls(result).length, 4);
@@ -137,17 +141,17 @@ test("login, timestamp, network, timeout and rejected sign-ins retry until succe
 	assert.match(result.mail, /累计尝试次数：6/);
 });
 
-test("each retry adds a fresh random 0..10 seconds to the 10-second base", () => {
-	const result = run(setup({ jitterSeconds: [0, 5, 10], outcomes: { "1000001": ["failure", "failure", "failure", "success"] } }));
-	assert.deepEqual(result.delays, [10000, 15000, 20000]);
+test("each retry uses a fresh random floating-point delay between 1 and 5 seconds", () => {
+	const result = run(setup({ retryRandomUnits: [0, 0.25, 0.75], outcomes: { "1000001": ["failure", "failure", "failure", "success"] } }));
+	assert.deepEqual(result.delays, [1000, 2000, 4000]);
 	assert.equal(result.state.attempts["1000001"].status, "success");
 	assert.equal(signCalls(result).length, 4);
 });
 
 test("random retry delay is capped at the deadline without another sign-in", () => {
-	const result = run(setup({ now: "2026-10-13T08:39:55+08:00", jitterSeconds: [10], outcomes: { "1000001": ["failure"] } }));
-	assert.deepEqual(result.delays, [5001]);
-	assert.equal(signCalls(result).length, 1);
+	const result = run(setup({ now: "2026-10-13T08:39:55+08:00", retryRandomUnits: [0.75], outcomes: { "1000001": ["failure"] } }));
+	assert.deepEqual(result.delays, [4000, 1001]);
+	assert.equal(signCalls(result).length, 2);
 	assert.equal(result.state.attempts["1000001"].status, "expired");
 });
 
@@ -163,12 +167,12 @@ test("successful courses stop while other courses continue retrying", () => {
 test("continuous failure stops at the window deadline with a final failure report", () => {
 	const result = run(setup({ outcomes: { "1000001": ["failure"] } }));
 	assert.equal(result.state.attempts["1000001"].status, "expired");
-	assert.equal(signCalls(result).length, 211);
-	assert.equal(result.state.attempts["1000001"].attemptCount, 211);
+	assert.equal(signCalls(result).length, 2101);
+	assert.equal(result.state.attempts["1000001"].attemptCount, 2101);
 	assert.ok(signCalls(result).every(call => call.now <= Date.parse("2026-10-13T08:40:00+08:00")));
 	assert.match(result.mail, /失败：Course 1000001/);
 	assert.match(result.mail, /窗口已结束.*not ready/);
-	assert.match(result.mail, /累计尝试次数：211/);
+	assert.match(result.mail, /累计尝试次数：2101/);
 });
 
 test("schedule refresh preserves failed attempts for retry and successes for skipping", () => {

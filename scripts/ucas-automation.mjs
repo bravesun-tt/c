@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { randomInt } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
 const ROOT = resolve(process.cwd());
 const STATE_FILE = resolve(ROOT, ".github/state/current.json");
@@ -15,7 +15,6 @@ const SIGN_MAIL_FILE = resolve(MAIL_DIR, "sign-results.txt");
 
 const TIMEZONE = process.env.UCAS_TIMEZONE || "Asia/Shanghai";
 const SIGN_BEFORE_MINUTES = positiveInt(process.env.SIGN_BEFORE_MINUTES, 25);
-const SIGN_RETRY_INTERVAL_MS = positiveInt(process.env.SIGN_RETRY_INTERVAL_MS, 10000);
 const SIGN_GRACE_MINUTES = positiveInt(process.env.SIGN_GRACE_MINUTES, 10);
 const REQUEST_TIMEOUT_MS = positiveInt(process.env.UCAS_REQUEST_TIMEOUT_MS, 15000);
 const SIGN_TIMESTAMP_BUFFER_MS = positiveInt(process.env.SIGN_TIMESTAMP_BUFFER_MS, 5000);
@@ -30,6 +29,12 @@ const API_UA = "student_5.0.1.2_android_12_20_100000000000000_110000";
 function positiveInt(value, fallback) {
 	const parsed = Number.parseInt(value ?? "", 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function randomRetryDelayMs() {
+	// 48 random bits produce a floating-point delay in [1s, 5s).
+	const unit = randomBytes(6).readUIntBE(0, 6) / 0x1000000000000;
+	return 1000 + unit * 4000;
 }
 
 function credentials() {
@@ -378,11 +383,11 @@ async function signDueCommand() {
 
 		if (pending.size) {
 			const nextDeadline = Math.min(...Array.from(pending.values(), (item) => item.latestAt));
-			// 每轮重新抽取 0～10 秒（含两端）的随机延迟。
-			const retryDelayMs = SIGN_RETRY_INTERVAL_MS + randomInt(0, 11) * 1000;
+			// 每轮重新抽取 1～5 秒的随机浮点延迟。
+			const retryDelayMs = randomRetryDelayMs();
 			const waitMs = Math.min(retryDelayMs, Math.max(0, nextDeadline - Date.now() + 1));
 			if (waitMs > 0) {
-				console.log(`还有 ${pending.size} 门课程未成功，${Math.ceil(waitMs / 1000)} 秒后重试`);
+				console.log(`还有 ${pending.size} 门课程未成功，${waitMs.toFixed(3) / 1000} 秒后重试`);
 				await delay(waitMs);
 			}
 		}
