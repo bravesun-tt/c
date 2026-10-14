@@ -1,0 +1,113 @@
+name: UCAS 公网前端（Cloudflare Tunnel）
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ucas-cloudflare-tunnel
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  expose-frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup npm run start -- --hostname 127.0.0.1 --port 3000 >"$RUNNER_TEMP/ucas-app.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/ucas-app.pid"
+
+          for _ in {1..60}; do
+            if curl --fail --silent --show-error --max-time 5 http://127.0.0.1:3000/ >/dev/null; then
+              echo "Next.js is ready on port 3000"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Next.js failed to start"
+          cat "$RUNNER_TEMP/ucas-app.log"
+          exit 1
+
+      - name: Install cloudflared
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --max-time 40 \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            --output "$RUNNER_TEMP/cloudflared"
+          chmod +x "$RUNNER_TEMP/cloudflared"
+          "$RUNNER_TEMP/cloudflared" --version
+
+      - name: Start Cloudflare Quick Tunnel
+        id: tunnel
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup "$RUNNER_TEMP/cloudflared" tunnel --no-autoupdate --url http://127.0.0.1:3000 \
+            >"$RUNNER_TEMP/ucas-tunnel.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/ucas-tunnel.pid"
+
+          tunnel_url=""
+          for _ in {1..60}; do
+            tunnel_url="$(grep --extended-regexp --only-matching 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/ucas-tunnel.log" | head --lines=1 || true)"
+            if [[ -n "$tunnel_url" ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ -z "$tunnel_url" ]]; then
+            echo "Cloudflare Tunnel failed to start"
+            cat "$RUNNER_TEMP/ucas-tunnel.log"
+            exit 1
+          fi
+
+          echo "url=$tunnel_url" >>"$GITHUB_OUTPUT"
+          {
+            echo "## UCAS 公网前端地址"
+            echo
+            echo "**$tunnel_url**"
+            echo
+            echo "此地址仅在本次 GitHub Actions 运行期间有效。结束或取消 Workflow 后，地址会失效。"
+          } >>"$GITHUB_STEP_SUMMARY"
+          echo "Cloudflare Tunnel is ready: $tunnel_url"
+
+      - name: Keep frontend and tunnel alive
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_pid="$(cat "$RUNNER_TEMP/ucas-app.pid")"
+          tunnel_pid="$(cat "$RUNNER_TEMP/ucas-tunnel.pid")"
+          trap 'kill "$tunnel_pid" "$app_pid" 2>/dev/null || true' EXIT
+
+          echo "公网前端地址：${{ steps.tunnel.outputs.url }}"
+          echo "保持此 Workflow 运行即可访问；需要关闭时取消本次运行。"
+
+          while kill -0 "$app_pid" 2>/dev/null && kill -0 "$tunnel_pid" 2>/dev/null; do
+            sleep 20
+          done
+
+          echo "Application or Cloudflare Tunnel stopped"
+          cat "$RUNNER_TEMP/ucas-app.log" || true
+          cat "$RUNNER_TEMP/ucas-tunnel.log" || true
+          exit 1
