@@ -91,7 +91,7 @@ function run(cwd, command = "sign-due", expectSuccess = true) {
 	const result = spawnSync(process.execPath, ["--import", mockPath, script, command], {
 		cwd,
 		encoding: "utf8",
-		timeout: 10000,
+		timeout: 30000,
 		env: { PATH: process.env.PATH, UCAS_USERNAME: "mock", UCAS_PASSWORD: "mock", UCAS_TIMEZONE: "Asia/Shanghai" },
 	});
 	assert.ifError(result.error);
@@ -133,7 +133,7 @@ test("login, timestamp, network, timeout and rejected sign-ins retry until succe
 	const result = run(setup({ loginFailures: 1, timestampFailures: 1, outcomes: { "1000001": ["network", "timeout", "failure", "success"] } }));
 	assert.equal(result.state.attempts["1000001"].status, "success");
 	assert.equal(result.state.attempts["1000001"].attemptCount, 6);
-	assert.deepEqual(result.delays, Array(5).fill(1000));
+	assert.deepEqual(result.delays, Array(5).fill(10));
 	assert.equal(result.calls.filter(call => call.endpoint === "login.action").length, 6);
 	assert.equal(result.calls.filter(call => call.endpoint === "get_timestamp.do").length, 5);
 	assert.equal(signCalls(result).length, 4);
@@ -141,17 +141,19 @@ test("login, timestamp, network, timeout and rejected sign-ins retry until succe
 	assert.match(result.mail, /累计尝试次数：6/);
 });
 
-test("each retry uses a fresh random floating-point delay between 1 and 5 seconds", () => {
+test("each retry uses a fresh random floating-point delay between 0.01 and 0.5 seconds", () => {
 	const result = run(setup({ retryRandomUnits: [0, 0.25, 0.75], outcomes: { "1000001": ["failure", "failure", "failure", "success"] } }));
-	assert.deepEqual(result.delays, [1000, 2000, 4000]);
+	assert.deepEqual(result.delays, [10, 132.5, 377.5]);
 	assert.equal(result.state.attempts["1000001"].status, "success");
 	assert.equal(signCalls(result).length, 4);
 });
 
 test("random retry delay is capped at the deadline without another sign-in", () => {
-	const result = run(setup({ now: "2026-10-13T08:39:55+08:00", retryRandomUnits: [0.75], outcomes: { "1000001": ["failure"] } }));
-	assert.deepEqual(result.delays, [4000, 1001]);
-	assert.equal(signCalls(result).length, 2);
+	const result = run(setup({ now: "2026-10-13T08:39:55+08:00", retryRandomUnits: [0.9999999999999999], outcomes: { "1000001": ["failure"] } }));
+	assert.equal(result.delays.length, 11);
+	assert.ok(result.delays.slice(0, 10).every((delay) => Math.abs(delay - 500) < 1));
+	assert.equal(result.delays.at(-1), 1);
+	assert.equal(signCalls(result).length, 11);
 	assert.equal(result.state.attempts["1000001"].status, "expired");
 });
 
@@ -165,14 +167,14 @@ test("successful courses stop while other courses continue retrying", () => {
 });
 
 test("continuous failure stops at the window deadline with a final failure report", () => {
-	const result = run(setup({ outcomes: { "1000001": ["failure"] } }));
+	const result = run(setup({ now: "2026-10-13T08:05:00+08:00", courses: [course("1000001", "08:05")], retryRandomUnits: [0.9999999999999999], outcomes: { "1000001": ["failure"] } }));
 	assert.equal(result.state.attempts["1000001"].status, "expired");
-	assert.equal(signCalls(result).length, 2101);
-	assert.equal(result.state.attempts["1000001"].attemptCount, 2101);
+	assert.ok(signCalls(result).length >= 1200 && signCalls(result).length <= 1202);
+	assert.equal(result.state.attempts["1000001"].attemptCount, signCalls(result).length);
 	assert.ok(signCalls(result).every(call => call.now <= Date.parse("2026-10-13T08:40:00+08:00")));
 	assert.match(result.mail, /失败：Course 1000001/);
 	assert.match(result.mail, /窗口已结束.*not ready/);
-	assert.match(result.mail, /累计尝试次数：2101/);
+	assert.match(result.mail, /累计尝试次数：1[2-3]0[0-2]/);
 });
 
 test("schedule refresh preserves failed attempts for retry and successes for skipping", () => {

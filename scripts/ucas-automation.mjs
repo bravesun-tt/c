@@ -32,9 +32,9 @@ function positiveInt(value, fallback) {
 }
 
 function randomRetryDelayMs() {
-	// 48 random bits produce a floating-point delay in [1s, 5s).
+	// 48 random bits produce a floating-point delay in [0.01s, 0.5s).
 	const unit = randomBytes(6).readUIntBE(0, 6) / 0x1000000000000;
-	return 1000 + unit * 4000;
+	return 10 + unit * 490;
 }
 
 function credentials() {
@@ -383,7 +383,7 @@ async function signDueCommand() {
 
 		if (pending.size) {
 			const nextDeadline = Math.min(...Array.from(pending.values(), (item) => item.latestAt));
-			// 每轮重新抽取 1～5 秒的随机浮点延迟。
+			// 每轮重新抽取 0.01～0.5 秒的随机浮点延迟。
 			const retryDelayMs = randomRetryDelayMs();
 			const waitMs = Math.min(retryDelayMs, Math.max(0, nextDeadline - Date.now() + 1));
 			if (waitMs > 0) {
